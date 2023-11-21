@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Create WordPress with CloudFormation
+
+Parameters:
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+  EC2AMIId:
+    Description: AMI ID
+    Type: String
+    Default: ami-012261b9035f8f938 # Amazon Linux 2023
+  DatabaseName:
+    Description: Database Name
+    Type: String
+    Default: wordpressdb
+  DatabaseMasterName:
+    Description: Database Master User Namee
+    Type: String
+    Default: admin
+  DatabaseMasterPassword:
+    Description: Database Master User Password
+    Type: String
+
+Resources:
+  # ------------------------------------------------------------#
+  #  VPC
+  # ------------------------------------------------------------#
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: MyVPC
+
+  # ------------------------------------------------------------#
+  #  Internet Gateway
+  # ------------------------------------------------------------#
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: My-InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # ------------------------------------------------------------#
+  #  Route Table
+  # ------------------------------------------------------------#
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: My-RouteTable
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # ------------------------------------------------------------#
+  #  Public Sunbet A
+  # ------------------------------------------------------------#
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGateway
+    Properties:
+      AvailabilityZone: "ap-northeast-1a"
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: "true"
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicSubnetA
+  PublicRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref RouteTable
+
+  # ------------------------------------------------------------#
+  #  Private Sunbet A
+  # ------------------------------------------------------------#
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: "ap-northeast-1a"
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: "false"
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateSubnetA
+
+  # ------------------------------------------------------------#
+  #  Public Sunbet C
+  # ------------------------------------------------------------#
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGateway
+    Properties:
+      AvailabilityZone: "ap-northeast-1c"
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: "true"
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicSubnetC
+
+  # ------------------------------------------------------------#
+  #  Private Sunbet C
+  # ------------------------------------------------------------#
+  PrivateSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: "ap-northeast-1c"
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: "false"
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateSubnetC
+
+  # ------------------------------------------------------------#
+  #  ALB Security Group
+  # ------------------------------------------------------------#
+  AlbSG1:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ALB-SG-1
+      GroupDescription: Allow HTTP access from internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # http
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: Name
+          Value: ALB-SG-1
+
+  # ------------------------------------------------------------#
+  #  ALB
+  # ------------------------------------------------------------#
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: My-ALB-1
+      Scheme: "internet-facing"
+      SecurityGroups:
+        - !Ref AlbSG1
+      # At least two subnet is needed
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetC
+      Tags:
+        - Key: Name
+          Value: My-ALB-1
+
+  # ------------------------------------------------------------#
+  #  EC2 Security Group
+  # ------------------------------------------------------------#
+  WebSG1:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: AlbSG1
+    Properties:
+      GroupName: Web-SG-1
+      GroupDescription: Allow SSH from Internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # ssh
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        # HTTP
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AlbSG1
+      Tags:
+        - Key: Name
+          Value: Web-SG-1
+
+  # ------------------------------------------------------------#
+  #  EC2
+  # ------------------------------------------------------------#
+  WebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: "ap-northeast-1a"
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+      ImageId: !Ref EC2AMIId
+      InstanceInitiatedShutdownBehavior: "stop"
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref WebSG1
+      SubnetId: !Ref PublicSubnetA
+      Tenancy: default
+      Tags:
+        - Key: Name
+          Value: WebServer
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          sudo dnf update -y
+          sudo dnf -y install httpd
+          sudo dnf -y localinstall https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm
+          sudo dnf -y install mysql mysql-community-client
+          sudo dnf -y install php php-mysqlnd php-fpm
+          systemctl enable httpd.service
+          systemctl start httpd.service
+          wget https://ja.wordpress.org/latest-ja.tar.gz
+          tar xzvf latest-ja.tar.gz
+          sudo cp -r wordpress/* /var/www/html/
+          sudo chown apache:apache /var/www/html/ -R
+          systemctl restart httpd.service
+
+  # ------------------------------------------------------------#
+  #  Target Group
+  # ------------------------------------------------------------#
+  MyTG1:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      # Health check enabled must be true for target groups with target type 'instance'
+      HealthCheckPath: /healthcheck/check
+      HealthCheckEnabled: True
+      Name: My-TG-1
+      Port: 80
+      Protocol: HTTP
+      Tags:
+        - Key: Name
+          Value: My-TG-1
+      Targets:
+        # If the target type is instance, you cannot override the Availability Zone
+        - Id: !Ref WebServer
+          Port: 80
+      VpcId: !Ref VPC
+
+  # ------------------------------------------------------------#
+  #  ALB Listner
+  # ------------------------------------------------------------#
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref MyTG1
+          Type: forward
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ------------------------------------------------------------#
+  #  Database Subnet Group
+  # ------------------------------------------------------------#
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: My-SubnetGroup
+      DBSubnetGroupName: My-SubnetGroup
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetC
+      Tags:
+        - Key: Name
+          Value: My-SubnetGroup
+
+  # ------------------------------------------------------------#
+  #  RDS Security Group
+  # ------------------------------------------------------------#
+  RDSSG1:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: RDS-SG-1
+      GroupDescription: Allow Request from WebServer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # http
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebSG1
+      Tags:
+        - Key: Name
+          Value: RDS-SG-1
+
+  # ------------------------------------------------------------#
+  #  RDS
+  # ------------------------------------------------------------#
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: false
+      AvailabilityZone: ap-northeast-1a
+      BackupRetentionPeriod: 0
+      DBInstanceClass: db.t3.micro
+      DBInstanceIdentifier: database-1
+      DBName: !Ref DatabaseName
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DeleteAutomatedBackups: false
+      DeletionProtection: false
+      Engine: mysql
+      EngineVersion: 8.0.35
+      MasterUsername: !Ref DatabaseMasterName
+      MasterUserPassword: !Ref DatabaseMasterPassword
+      MaxAllocatedStorage: 1000
+      MultiAZ: false
+      PubliclyAccessible: false
+      StorageEncrypted: false
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: My-RDS-1
+      VPCSecurityGroups:
+        - !Ref RDSSG1
